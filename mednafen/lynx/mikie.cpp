@@ -1657,6 +1657,32 @@ int CMikie::StateAction(StateMem *sm, int load, int data_only)
 
 	int ret = MDFNSS_StateAction(sm, load, data_only, MikieRegs, "MIKY", false);
 
+	// The receive queue: bytes off the wire the guest has not read yet. Stock
+	// never saved it because nothing put more than one byte in it; on a cable a
+	// state taken mid-burst lost them, and rollback restores a state every time
+	// a prediction misses. Its own section, and optional, so an older state
+	// still loads. The display line is here because fixed-window frames stop
+	// part way down the screen.
+	SFORMAT MikieUartRx[] =
+	{
+		SFARRAY32N((uint32 *)mUART_Rx_input_queue, UART_MAX_RX_QUEUE, "mUART_Rx_input_queue"),
+		SFVAR(mUART_Rx_input_ptr),
+		SFVAR(mUART_Rx_output_ptr),
+		SFVAR(mUART_Rx_waiting),
+		SFVAR(mUART_Rx_framing_error),
+		SFVAR(mUART_Rx_overun_error),
+		SFVAR(mpDisplayCurrentLine),
+		// Where the screen DMA is. Stock frames always end at DisplayEndOfFrame,
+		// which resets all three, so a stock state never needed them; a fixed
+		// window stops part way down the screen, and the DMA steals CPU cycles,
+		// so a restore without them runs a different number of instructions.
+		SFVAR(mLynxLine),
+		SFVAR(mLynxLineDMACounter),
+		SFVAR(mLynxAddr),
+		SFEND
+	};
+	ret &= MDFNSS_StateAction(sm, load, data_only, MikieUartRx, "MIKR", true);
+
 	if(load)
 	{
 

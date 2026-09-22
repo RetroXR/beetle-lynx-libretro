@@ -108,6 +108,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 	},
 	"disabled"
    },
+   {
+	"lynx_fixed_frames",
+	"Fixed-Length Frames (Netplay)",
+	NULL,
+	"End every frame after the same number of cycles instead of when the screen finishes drawing, so cabled units' frames line up. For netplay over ComLynx; leave off otherwise.",
+	NULL,
+	NULL,
+	{
+		{ "disabled", NULL },
+		{ "enabled", NULL },
+		{ NULL, NULL },
+	},
+	"disabled"
+   },
 
    { NULL, NULL, NULL, NULL, NULL, NULL, {{0}}, NULL },
 };

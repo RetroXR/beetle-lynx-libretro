@@ -166,6 +166,12 @@ static void check_variables(void)
       else
          force_60hz = false;
    }
+
+   var.key = "lynx_fixed_frames";
+   var.value = NULL;
+   lynx_fixed_frames = environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value
+      && strcmp(var.value, "enabled") == 0;
+   lynx_fixed_fps = force_60hz ? 60 : 75;
 }
 
 #define MAX_PLAYERS 1

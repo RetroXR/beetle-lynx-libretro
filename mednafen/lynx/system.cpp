@@ -217,6 +217,142 @@ void CloseGame(void)
 }
 
 static uint8 *chee;
+
+/* ── Fixed-window frames (lynx_fixed_frames, see link.h) ──────────────────
+ *
+ * Every retro_run is 16 MHz / fps cycles of this unit's clock, carried to the
+ * cycle so nothing drifts, instead of "until the display finishes". Mikey draws
+ * into a back buffer that is always armed, and each picture it finishes is
+ * copied to the one libretro is shown; a game drawing at 60 Hz under a 75 Hz
+ * window simply shows a picture twice now and then. Everything that decides
+ * where a window ends is in the savestate, so a restored frame ends where it
+ * ended the first time. */
+unsigned lynx_fixed_fps = 75;
+static uint32 fixed_back_pixels[160 * 102];
+static MDFN_Surface fixed_back;
+static uint32 fixed_frac;     /* always 0 now; kept so the state layout holds */
+static uint32 fixed_over;     /* cycles the last window ran past its end */
+
+static void FixedBlankUndrawn(MDFN_Surface *s)
+{
+ for (int y = 0; y < 102; y++)
+ {
+  if (LynxLineDrawn[y])
+   continue;
+  if (s->bpp == 16)
+  {
+   uint16 *row = s->pixels + y * s->pitch;
+#if defined(ABGR1555)
+   uint16 black = MAKECOLOR_15_1(30, 30, 30, 0);
+#else
+   uint16 black = MAKECOLOR_16(30, 30, 30, 0);
+#endif
+   for (int x = 0; x < 160; x++)
+    row[x] = black;
+  }
+  else
+  {
+   uint32 *row = (uint32 *)s->pixels + y * s->pitch;
+   uint32 black = MAKECOLOR_32(30, 30, 30, 0);
+   for (int x = 0; x < 160; x++)
+    row[x] = black;
+  }
+ }
+}
+
+static void FixedArm(EmulateSpecStruct *espec)
+{
+ fixed_back.width = espec->surface->width;
+ fixed_back.height = espec->surface->height;
+ fixed_back.pitch = espec->surface->pitch;
+ fixed_back.bpp = espec->surface->bpp;
+ fixed_back.pixels = (uint16 *)fixed_back_pixels;
+ lynxie->mMikie->mpDisplayCurrent = &fixed_back;
+}
+
+static void EmulateFixed(EmulateSpecStruct *espec)
+{
+ /* A whole number of cycles, the same every frame: 75.0001 Hz rather than a
+  * carried remainder, because a remainder depends on how many frames a unit
+  * has run and two units switched on apart would then disagree about where
+  * frame N ends. */
+ const uint32 fps = lynx_fixed_fps ? lynx_fixed_fps : 75;
+ const uint32 budget = 16000000u / fps;
+ uint32 left = budget > fixed_over ? budget - fixed_over : 1;
+ uint32 ran = 0;
+ uint32 prev;
+
+ fixed_frac = 0;
+
+ lynxie->mMikie->mpSkipFrame = espec->skip;
+ /* A picture in progress carries on across the edge; only arm a new one if
+  * Mikey is not already drawing into ours (the first frame, or after a load
+  * reset the display). */
+ if (lynxie->mMikie->mpDisplayCurrent != &fixed_back)
+ {
+  if (lynxie->mMikie->mpDisplayCurrentLine > 102)
+   lynxie->mMikie->mpDisplayCurrentLine = 0;
+  FixedArm(espec);
+ }
+ lynxie->mMikie->startTS = gSystemCycleCount;
+
+ left = lynx_link_frame_begin(left, budget);
+ prev = gSystemCycleCount;
+ while (ran < left)
+ {
+  uint32 step;
+
+  if (gSystemCycleCount >= gNextTimerEvent)
+   lynxie->mMikie->Update();
+  lynxie->mCpu->Update();
+
+  step = gSystemCycleCount - prev;
+  if (step >= 0x40000000u)
+   step -= 0x80000000u;   /* Mikey folded the counter back by 2^31 */
+
+  /* A sleeping CPU skips to the next timer event, which can be most of a
+   * line away. Sleep only to the window's edge: the CPU does nothing while
+   * asleep, so a sleep taken in two pieces is the same sleep. */
+  if (gSystemCPUSleep)
+  {
+   uint32 remaining = (ran + step < left) ? left - (ran + step) : 0;
+   uint32 jump = gNextTimerEvent - gSystemCycleCount;
+   if (gNextTimerEvent > gSystemCycleCount && jump > remaining)
+    gSystemCycleCount += remaining;
+   else
+    gSystemCycleCount = gNextTimerEvent;
+   step = gSystemCycleCount - prev;
+   if (step >= 0x40000000u)
+    step -= 0x80000000u;
+  }
+  prev = gSystemCycleCount;
+  ran += step;
+
+  lynx_link_ran();
+
+  if (!lynxie->mMikie->mpDisplayCurrent)
+  {
+   /* Mikey finished a picture: show it, and start the next one at once, so
+    * the display is never idle at a window's edge. */
+   FixedBlankUndrawn(&fixed_back);
+   memcpy(espec->surface->pixels, fixed_back_pixels, sizeof(fixed_back_pixels));
+   memset(LynxLineDrawn, 0, sizeof(LynxLineDrawn[0]) * 102);
+   lynxie->mMikie->mpDisplayCurrentLine = 0;
+   FixedArm(espec);
+  }
+ }
+ fixed_over = ran - left;
+ lynx_link_frame_end();
+
+ if(espec->SoundBuf)
+ {
+  lynxie->mMikie->mikbuf.end_frame((gSystemCycleCount - lynxie->mMikie->startTS) >> 2);
+  espec->SoundBufSize = lynxie->mMikie->mikbuf.read_samples(espec->SoundBuf, espec->SoundBufMaxSize) / 2;
+ }
+ else
+  espec->SoundBufSize = 0;
+}
+
 void Emulate(EmulateSpecStruct *espec)
 {
  espec->DisplayRect.x = 0;
@@ -237,6 +373,12 @@ void Emulate(EmulateSpecStruct *espec)
  lynxie->SetButtonData(butt_data);
 
  MDFNMP_ApplyPeriodicCheats();
+
+ if (lynx_fixed_frames)
+ {
+  EmulateFixed(espec);
+  return;
+ }
 
  memset(LynxLineDrawn, 0, sizeof(LynxLineDrawn[0]) * 102);
 
@@ -341,6 +483,22 @@ int StateAction(StateMem *sm, int load, int data_only)
  ret &= lynxie->mCart->StateAction(sm, load, data_only);
  ret &= lynxie->mMikie->StateAction(sm, load, data_only);
  ret &= lynxie->mCpu->StateAction(sm, load, data_only);
+
+ {
+  /* Where the current fixed window stands and the picture it is part way
+   * through. Written whatever the mode, so a state's size never depends on
+   * an option. */
+  SFORMAT FixedRegs[] =
+  {
+   SFVAR(fixed_frac),
+   SFVAR(fixed_over),
+   SFARRAYBN(LynxLineDrawn, 102, "LynxLineDrawn"),
+   SFARRAY32N(fixed_back_pixels, 160 * 102, "fixed_back"),
+   SFEND
+  };
+  ret &= MDFNSS_StateAction(sm, load, data_only, FixedRegs, "LXFX", true);
+ }
+ ret &= lynx_link_state_action(sm, load, data_only);
  return ret;
 }
 

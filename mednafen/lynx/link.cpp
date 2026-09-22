@@ -21,14 +21,18 @@
  * leader reads back what it sent to find out whether it collided. So while
  * cabled, this unit's own byte goes into the same inbox as everyone else's
  * instead of Mikey's instant loopback, bytes are ordered by the tick they end,
- * and frames that overlap are merged. A byte is latched at its stop bit with
- * whatever overlaps it that has arrived by then: a peer that starts in the last
- * grain of it may not have, and is heard as its own frame. Holding the byte a
- * grain to be sure makes a unit hear its own echo late, which games that check
- * the echo for a collision do not forgive.
+ * and frames that overlap are merged. A byte is latched at its stop bit, on
+ * its own tick, with EVERY frame that overlaps it: before latching, the unit
+ * waits (in host time only) until each peer has run past that tick, and since a
+ * byte is sent the moment it starts, anything overlapping this one has been
+ * sent by then. It used to latch with whatever had arrived, which made a
+ * collision depend on which thread got there first -- invisible in a room,
+ * a desync under netplay. Holding the byte itself a grain instead makes a unit
+ * hear its own echo late, which games that check the echo do not forgive.
  *
  * Every machine rendezvouses each grain, so a byte lands at the same emulated
- * moment whatever the host's threads did -- which is what netplay relies on. */
+ * moment whatever the host's threads did -- which is what netplay relies on.
+ * Rollback needs one more thing, lynx_fixed_frames (link.h). */
 
 #include <string.h>
 
@@ -74,6 +78,14 @@ static uint16 inbox[INBOX_MAX];
 static uint64_t inbox_tick[INBOX_MAX];
 static uint32 inbox_len[INBOX_MAX];
 static unsigned inbox_count;
+
+bool lynx_fixed_frames;
+/* The tick this fixed-window frame ends on, while one is running. */
+static uint64_t frame_end;
+static bool in_frame;
+/* What the bus last granted: every peer has promised not to send anything
+ * stamped before it. Only meaningful while cabled. */
+static uint64_t granted;
 
 static void say(enum retro_log_level level, const char *msg, unsigned a, int b);
 
@@ -171,6 +183,7 @@ void lynx_link_start(void)
    anchored = false;
    peers = 0;
    inbox_count = 0;
+   granted = 0;
    limit = now;
    last_cycle = gSystemCycleCount;
    if (!link_port)
@@ -230,6 +243,8 @@ static void refresh_peers(void)
       /* Bytes on their way to the last cable belong to it, not to this one. */
       inbox_count = 0;
       anchored = false;
+      /* A grant from the last wire vouches for nothing on this one. */
+      granted = 0;
       /* NOEXP: a game can see a lead in the socket. */
       lynxie->mMikie->ComLynxCable(peers >= 2);
       lynxie->mMikie->ComLynxExternalLoopback(peers >= 2);
@@ -238,13 +253,26 @@ static void refresh_peers(void)
    }
 }
 
-static void rendezvous(void)
+/* Meet the peers. `request` is how far this machine wants to run, or 0 for a
+ * grain from here. */
+static void rendezvous_to(uint64_t request)
 {
    uint32_t wake = RETRO_LINK_WAKE_NONE;
    uint64_t grant;
 
    refresh_peers();
-   grant = link_if->advance(link_port, now, now + LINK_GRAIN, now + LINK_GRAIN, &wake);
+   if (!request)
+   {
+      request = now + LINK_GRAIN;
+      /* Never past the end of a fixed frame. A peer that has reached the edge
+       * stops there until every machine has, having promised a grain beyond
+       * it; asking it for a grain beyond where THIS one stands can be asking
+       * for more than it has promised, and then neither moves. When the grant
+       * arrives only changes when bytes are pumped, never when they land. */
+      if (in_frame && request > frame_end)
+         request = frame_end > now ? frame_end : now;
+   }
+   grant = link_if->advance(link_port, now, now + LINK_GRAIN, request, &wake);
    anchored = true;
    pump();
 
@@ -254,6 +282,13 @@ static void rendezvous(void)
       limit = grant;
    else
       limit = now + 1;                /* woken without a grant: ask again at once */
+   if (grant != RETRO_LINK_UNBOUNDED && grant > granted)
+      granted = grant;
+}
+
+static void rendezvous(void)
+{
+   rendezvous_to(0);
 }
 
 void lynx_link_ran(void)
@@ -264,12 +299,33 @@ void lynx_link_ran(void)
       return;
    step = gSystemCycleCount - last_cycle;
    last_cycle = gSystemCycleCount;
+   /* Mikey folds the cycle counter back by 2^31 every couple of minutes; that
+    * is running, not a jump. */
+   if (step >= 0x40000000u)
+      step -= 0x80000000u;
    if (step > LINK_MAX_STEP)
       step = 0;
    now += step;
 
    while (inbox_count && inbox_tick[0] <= now)
    {
+      /* A byte past the edge of a fixed frame waits for the next one: every
+       * peer has stopped AT the edge, and what they will say beyond it is not
+       * known yet. At most an instruction's overshoot late. */
+      if (lynx_fixed_frames && in_frame && inbox_tick[0] > frame_end)
+         break;
+      /* Everything that overlaps this byte must be here before it is latched,
+       * or what the wire read depends on which thread got there first. A byte
+       * overlapping it was STARTED before it ended, and a peer sends a byte as
+       * it starts; so once every peer has run past the end of this one -- a
+       * grant a grain beyond it -- nothing that could merge with it is still
+       * to come. Waiting costs host time only: the byte still lands on its
+       * own tick. */
+      if (peers >= 2 && granted < inbox_tick[0] + LINK_GRAIN)
+      {
+         rendezvous_to(inbox_tick[0] + LINK_GRAIN);
+         continue;
+      }
       /* Every frame that overlaps the first on the wire is the same frame:
        * the line is low wherever any unit drives it low. */
       uint16 wire = inbox[0];
@@ -290,4 +346,99 @@ void lynx_link_ran(void)
 
    if (now >= limit)
       rendezvous();
+}
+
+uint32 lynx_link_frame_begin(uint32 cycles, uint32 window)
+{
+   if (!link_port)
+      return cycles;
+   /* A machine the bus is about to anchor afresh (a cable joined, or it has
+    * never called in) starts this frame with a whole window rather than what
+    * its last one left. Its origin will be where it stands now, so every unit
+    * anchored at this edge then ends every later frame on the very same tick
+    * of the bus -- not on the same tick give or take whatever instruction each
+    * one happened to overshoot its last edge by. */
+   refresh_peers();
+   if (!anchored)
+      cycles = window;
+   frame_end = now + cycles;
+   in_frame = true;
+   /* Meet the peers at the edge, so a cable joined between frames anchors every
+    * machine at the start of the same frame rather than wherever each one next
+    * happened to look. */
+   rendezvous();
+   return cycles;
+}
+
+void lynx_link_frame_end(void)
+{
+   if (!link_port)
+      return;
+   in_frame = false;
+   /* Promise a grain past the edge before stopping at it: every byte sent in the
+    * next frame lands at least a grain after where this one stands, and a peer
+    * finishing its own frame a few cycles later must not wait on us. Asking for
+    * where this machine already is is granted at once. */
+   if (peers >= 2)
+      link_if->advance(link_port, now, now + LINK_GRAIN, now, NULL);
+}
+
+int lynx_link_state_action(StateMem *sm, int load, int data_only)
+{
+   /* Copies, so a load outside fixed frames can read the section and keep
+    * nothing: there the link clock must carry on, because nothing puts the
+    * bus back to the instant the state was taken. */
+   uint64_t s_now = now, s_limit = limit, s_granted = granted;
+   uint32 s_peers = peers;
+   bool s_anchored = anchored;
+   uint32 s_count = inbox_count;
+   uint16 s_inbox[INBOX_MAX];
+   uint64_t s_tick[INBOX_MAX];
+   uint32 s_len[INBOX_MAX];
+   int ret;
+
+   memcpy(s_inbox, inbox, sizeof(s_inbox));
+   memcpy(s_tick, inbox_tick, sizeof(s_tick));
+   memcpy(s_len, inbox_len, sizeof(s_len));
+   {
+      SFORMAT LinkRegs[] =
+      {
+         SFVARN(s_now, "now"),
+         SFVARN(s_limit, "limit"),
+         SFVARN(s_granted, "granted"),
+         SFVARN(s_peers, "peers"),
+         SFVARN(s_anchored, "anchored"),
+         SFVARN(s_count, "inbox_count"),
+         SFARRAY16N(s_inbox, INBOX_MAX, "inbox"),
+         SFARRAY64N(s_tick, INBOX_MAX, "inbox_tick"),
+         SFARRAY32N(s_len, INBOX_MAX, "inbox_len"),
+         SFEND
+      };
+      ret = MDFNSS_StateAction(sm, load, data_only, LinkRegs, "LINK", true);
+   }
+   if (!load)
+      return ret;
+
+   if (lynx_fixed_frames && ret && s_count <= INBOX_MAX)
+   {
+      now = s_now;
+      limit = s_limit;
+      granted = s_granted;
+      anchored = s_anchored;
+      inbox_count = s_count;
+      memcpy(inbox, s_inbox, sizeof(s_inbox));
+      memcpy(inbox_tick, s_tick, sizeof(s_tick));
+      memcpy(inbox_len, s_len, sizeof(s_len));
+      if (link_port && lynxie && s_peers != peers)
+      {
+         peers = s_peers;
+         lynxie->mMikie->ComLynxCable(peers >= 2);
+         lynxie->mMikie->ComLynxExternalLoopback(peers >= 2);
+      }
+      last_cycle = gSystemCycleCount;
+      in_frame = false;
+      return ret;
+   }
+   lynx_link_resync();
+   return ret;
 }
