@@ -8,6 +8,7 @@
 #include <streams/file_stream.h>
 #include <algorithm>
 #include "mednafen/lynx/system.h"
+#include "mednafen/lynx/link.h"
 #include "libretro_core_options.h"
 
 #ifdef _MSC_VER
@@ -97,11 +98,14 @@ void retro_init(void)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL))
       libretro_supports_input_bitmasks = true;
+
+   lynx_link_init(environ_cb);
 }
 
 void retro_reset(void)
 {
    DoSimpleCommand(MDFN_MSC_RESET);
+   lynx_link_resync();
 }
 
 bool retro_load_game_special(unsigned, const struct retro_game_info *, size_t)
@@ -294,6 +298,8 @@ bool retro_load_game(const struct retro_game_info *info)
 
    check_variables();
 
+   lynx_link_start();
+
    return true;
 }
 
@@ -314,6 +320,7 @@ static void MDFNI_CloseGame(void)
 
 void retro_unload_game(void)
 {
+   lynx_link_stop();
    MDFNI_CloseGame();
 }
 
@@ -494,6 +501,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 
 void retro_deinit(void)
 {
+   lynx_link_stop();
    if (surf)
    {
       if (surf->pixels)

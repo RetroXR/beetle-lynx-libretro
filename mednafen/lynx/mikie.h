@@ -183,6 +183,17 @@ class CMikie : public CLynxBase
 		void	ComLynxRxData(int data);
 		void	ComLynxTxLoopback(int data);
 		void	ComLynxTxCallback(void (*function)(int data,uint32 objref),uint32 objref);
+		// A cable: told the moment a byte (or a break) starts onto the wire, when
+		// its end is already known, rather than when it finishes.
+		void	ComLynxTxStartCallback(void (*function)(int data,uint32 objref),uint32 objref);
+		// A byte off the wire whose stop bit has just passed: no countdown.
+		void	ComLynxRxWire(int data);
+		// System cycles one frame (start, 8 data, parity, stop) takes at the
+		// current Timer 4 rate.
+		uint32	ComLynxByteCycles(void);
+		// A cable carries this unit's own bytes back like everyone else's, in
+		// wire order and through collisions, so Mikey's instant loopback stops.
+		void	ComLynxExternalLoopback(bool external) { mUART_LOOPBACK_EXTERNAL=external; }
 		
 		void	DisplaySetAttributes(int32 bpp);
 		
@@ -361,6 +372,8 @@ class CMikie : public CLynxBase
 		int			mUART_CABLE_PRESENT;
 		void		(*mpUART_TX_CALLBACK)(int data,uint32 objref);
 		uint32		mUART_TX_CALLBACK_OBJECT;
+		void		(*mpUART_TX_START_CALLBACK)(int data,uint32 objref);
+		bool		mUART_LOOPBACK_EXTERNAL;
 
 		int			mUART_Rx_input_queue[UART_MAX_RX_QUEUE];
 		unsigned int mUART_Rx_input_ptr;

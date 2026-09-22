@@ -68,6 +68,8 @@ CMikie::CMikie(CSystem& parent)
 
 	mUART_CABLE_PRESENT=false;
 	mpUART_TX_CALLBACK=NULL;
+	mpUART_TX_START_CALLBACK=NULL;
+	mUART_LOOPBACK_EXTERNAL=false;
 
 	int loop;
 	for(loop=0;loop<16;loop++) mPalette[loop].Index=loop;
@@ -354,6 +356,29 @@ void CMikie::ComLynxTxCallback(void (*function)(int data,uint32 objref),uint32 o
 	mUART_TX_CALLBACK_OBJECT=objref;
 }
 
+
+void CMikie::ComLynxTxStartCallback(void (*function)(int data,uint32 objref),uint32 objref)
+{
+	mpUART_TX_START_CALLBACK=function;
+	mUART_TX_CALLBACK_OBJECT=objref;
+}
+
+void CMikie::ComLynxRxWire(int data)
+{
+	if(mUART_Rx_waiting<UART_MAX_RX_QUEUE)
+	{
+		// Latched on the next Timer 4 tick: the byte is already whole.
+		if(!mUART_Rx_waiting) mUART_RX_COUNTDOWN=0;
+		mUART_Rx_input_queue[mUART_Rx_input_ptr]=data;
+		mUART_Rx_input_ptr = (mUART_Rx_input_ptr + 1) % UART_MAX_RX_QUEUE;
+		mUART_Rx_waiting++;
+	}
+}
+
+uint32 CMikie::ComLynxByteCycles(void)
+{
+	return (UART_TX_TIME_PERIOD) * ((mTIM_4_BKUP+1) << (4+3+mTIM_4_LINKING));
+}
 
 void CMikie::DisplaySetAttributes(int32 bpp)
 {
@@ -892,7 +917,8 @@ void CMikie::Poke(uint32 addr,uint8 data)
 				// Trigger send break, it will self sustain as long as sendbreak is set
 				mUART_TX_COUNTDOWN=UART_TX_TIME_PERIOD;
 				// Loop back what we transmitted
-				ComLynxTxLoopback(UART_BREAK_CODE);
+				if(!mUART_LOOPBACK_EXTERNAL) ComLynxTxLoopback(UART_BREAK_CODE);
+				if(mpUART_TX_START_CALLBACK) (*mpUART_TX_START_CALLBACK)(UART_BREAK_CODE,mUART_TX_CALLBACK_OBJECT);
 			}
 			break;
 
@@ -918,7 +944,8 @@ void CMikie::Poke(uint32 addr,uint8 data)
 			// Set countdown to transmission
 			mUART_TX_COUNTDOWN=UART_TX_TIME_PERIOD;
 			// Loop back what we transmitted
-			ComLynxTxLoopback(mUART_TX_DATA);
+			if(!mUART_LOOPBACK_EXTERNAL) ComLynxTxLoopback(mUART_TX_DATA);
+			if(mpUART_TX_START_CALLBACK) (*mpUART_TX_START_CALLBACK)(mUART_TX_DATA,mUART_TX_CALLBACK_OBJECT);
 			break;
 
 		case (SDONEACK&0xff):
@@ -2003,7 +2030,8 @@ void CMikie::Update(void)
 								// Auto-Respawn new transmit
 								mUART_TX_COUNTDOWN=UART_TX_TIME_PERIOD;
 								// Loop back what we transmitted
-								ComLynxTxLoopback(mUART_TX_DATA);
+								if(!mUART_LOOPBACK_EXTERNAL) ComLynxTxLoopback(mUART_TX_DATA);
+								if(mpUART_TX_START_CALLBACK) (*mpUART_TX_START_CALLBACK)(mUART_TX_DATA,mUART_TX_CALLBACK_OBJECT);
 							}
 							else
 							{
