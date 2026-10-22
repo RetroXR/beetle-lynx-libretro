@@ -46,7 +46,7 @@ extern retro_log_printf_t log_cb;
 extern CSystem *lynxie;
 
 /* Wire name. A peer with any other id is never joined to this one. */
-#define LINK_PROTOCOL "comlynx-1"
+#define LINK_PROTOCOL "comlynx"
 
 /* gSystemCycleCount's 16 MHz. */
 #define LINK_CLOCK_RATE ((uint64_t)16000000)

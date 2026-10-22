@@ -3,7 +3,7 @@
 #
 # This fork carries ComLynx: Mikey's UART (mednafen/lynx/link.cpp) joins a link
 # bus the frontend hosts through RETRO_ENVIRONMENT_GET_LINK_INTERFACE
-# (libretro/RetroArch#19454) and speaks `comlynx-1`, two to eight units on one
+# (libretro/RetroArch#19454) and speaks `comlynx`, two to eight units on one
 # open-collector wire. With no bus, or nothing cabled, the UART behaves as the
 # stock core's does, so there is no option to switch it on.
 #
@@ -261,7 +261,7 @@ jobs:
           x86_64. The source for these binaries is this tag.
 
           Over the stock buildbot build this carries ComLynx, spoken as
-          \`comlynx-1\` over a link bus the frontend hosts: two to eight units
+          \`comlynx\` over a link bus the frontend hosts: two to eight units
           on one open-collector wire, each byte latched on the tick its stop bit
           leaves the wire, a unit's own byte heard through the same inbox as its
           peers', and overlapping frames merged as the wire would. Uncabled the
