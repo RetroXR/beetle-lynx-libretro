@@ -52,6 +52,7 @@
 #define SYSTEM_CPP
 
 #include "../lynx/system.h"
+#include "../lynx/link.h"
 #include "../mednafen-endian.h"
 
 #include "../general.h"
@@ -245,7 +246,10 @@ void Emulate(EmulateSpecStruct *espec)
  lynxie->mMikie->startTS = gSystemCycleCount;
 
  while(lynxie->mMikie->mpDisplayCurrent && (gSystemCycleCount - lynxie->mMikie->startTS) < 700000)
+ {
   lynxie->Update();
+  lynx_link_ran();
+ }
 
  {
 	 // FIXME, we should integrate this into mikie.*
@@ -337,6 +341,9 @@ int StateAction(StateMem *sm, int load, int data_only)
  ret &= lynxie->mCart->StateAction(sm, load, data_only);
  ret &= lynxie->mMikie->StateAction(sm, load, data_only);
  ret &= lynxie->mCpu->StateAction(sm, load, data_only);
+ /* A load moves gSystemCycleCount; the link clock carries on from here. */
+ if (load)
+  lynx_link_resync();
  return ret;
 }
 

@@ -11,6 +11,7 @@ endif
 SOURCES_C   :=
 SOURCES_CXX := \
 	$(CORE_EMU_DIR)/cart.cpp \
+	$(CORE_EMU_DIR)/link.cpp \
 	$(CORE_EMU_DIR)/c65c02.cpp \
 	$(CORE_EMU_DIR)/memmap.cpp \
 	$(CORE_EMU_DIR)/mikie.cpp \
