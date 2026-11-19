@@ -170,8 +170,7 @@ void lynx_link_init(retro_environment_t env)
 {
    memset(&link_storage, 0, sizeof(link_storage));
    link_if = NULL;
-   if (env(RETRO_ENVIRONMENT_GET_LINK_INTERFACE, &link_storage) ||
-       env(RETRO_ENVIRONMENT_GET_LINK_INTERFACE_FINAL, &link_storage))
+   if (env(RETRO_ENVIRONMENT_GET_LINK_INTERFACE, &link_storage))
       link_if = &link_storage;
 }
 
